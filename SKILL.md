@@ -43,14 +43,11 @@ description: Confluence文档管理Skill。支持Markdown上传到Confluence、�
 {
   "base_url": "https://docs.matrixback.com",
   "username": "rongtao.wang",
-  "password": "your_password"
+  "api_key": "your_api_key"
 }
 ```
 
-或简单格式：
-```
-username:password
-```
+API Key 在 Confluence 个人设置中生成（Profile > Personal Access Tokens）。
 
 ## Claude 使用指南
 
