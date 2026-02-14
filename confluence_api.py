@@ -465,7 +465,7 @@ class ConfluenceAPI:
         response = self._request(
             "PUT",
             f"/rest/api/content/{page_id}",
-            json=update_data
+            data=update_data
         )
 
         if response.status_code == 200:
@@ -1345,7 +1345,7 @@ class ConfluenceAPI:
 
             # 块级元素
             if not escaped_line.strip():
-                html_lines.append('<p></p>')
+                continue  # 空行是 Markdown 段落分隔符，不生成 HTML
             elif escaped_line.startswith('# '):
                 html_lines.append(f'<h1>{escaped_line[2:]}</h1>')
             elif escaped_line.startswith('## '):
