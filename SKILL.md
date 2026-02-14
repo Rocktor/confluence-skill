@@ -1,6 +1,6 @@
 ---
 name: confluence
-version: 2.4.1
+version: 2.5.0
 description: Confluence文档管理Skill。支持Markdown上传到Confluence、从Confluence导出为Markdown，支持PlantUML和Mermaid图表转换、表格操作、精确编辑等全功能。
 ---
 
