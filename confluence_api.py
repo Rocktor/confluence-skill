@@ -115,10 +115,26 @@ class ConfluenceAPI:
 
     def _extract_page_id(self, page_id_or_url: str) -> str:
         """从 URL 或直接 ID 提取页面 ID"""
-        if "pageId=" in str(page_id_or_url):
-            match = re.search(r'pageId=(\d+)', page_id_or_url)
-            return match.group(1) if match else page_id_or_url
-        return str(page_id_or_url)
+        s = str(page_id_or_url)
+        # pageId=xxx 格式
+        if "pageId=" in s:
+            match = re.search(r'pageId=(\d+)', s)
+            return match.group(1) if match else s
+        # /display/SPACE/Title 格式
+        match = re.match(r'https?://.+/display/([^/]+)/(.+?)(?:\?.*)?$', s)
+        if match:
+            space_key = match.group(1)
+            title = requests.utils.unquote(match.group(2)).replace('+', ' ')
+            resp = self._request("GET", "/rest/api/content", params={
+                "spaceKey": space_key,
+                "title": title,
+                "limit": 1
+            })
+            results = resp.json().get("results", [])
+            if results:
+                return results[0]["id"]
+            raise ValueError(f"未找到页面: space={space_key}, title={title}")
+        return s
 
     def _extract_images(self, html_content: str, page_id: str) -> List[Dict[str, str]]:
         """从 HTML 内容中提取图片信息"""
