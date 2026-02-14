@@ -49,6 +49,18 @@ description: Confluence文档管理Skill。支持Markdown上传到Confluence、�
 
 API Key 在 Confluence 个人设置中生成（Profile > Personal Access Tokens）。
 
+## 页面标识（v2.5.0+）
+
+所有接受 `page_id_or_url` 参数的方法均支持以下三种格式：
+
+| 格式 | 示例 |
+|------|------|
+| 纯 pageId | `238854355` |
+| pageId URL | `https://docs.matrixback.com/pages/viewpage.action?pageId=238854355` |
+| display URL | `https://docs.matrixback.com/display/cpb/Page+Title` |
+
+display URL 会自动通过 API 查询 spaceKey + title 解析为 pageId。
+
 ## Claude 使用指南
 
 ### 初始化 API
@@ -64,10 +76,10 @@ api = ConfluenceAPI()
 ### 读取页面
 
 ```python
-# 支持 URL 或 pageId
-result = api.read_page("https://docs.matrixback.com/pages/viewpage.action?pageId=238854355")
-# 或
+# 支持三种格式：pageId、pageId URL、display URL
 result = api.read_page("238854355")
+result = api.read_page("https://docs.matrixback.com/pages/viewpage.action?pageId=238854355")
+result = api.read_page("https://docs.matrixback.com/display/cpb/Page+Title")
 
 # 返回:
 # {
