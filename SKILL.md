@@ -1,6 +1,6 @@
 ---
 name: confluence
-version: 2.5.0
+version: 2.6.0
 description: Confluence文档管理Skill。支持Markdown上传到Confluence、从Confluence导出为Markdown，支持PlantUML和Mermaid图表转换、表格操作、精确编辑等全功能。
 ---
 
@@ -58,8 +58,9 @@ API Key 在 Confluence 个人设置中生成（Profile > Personal Access Tokens�
 | 纯 pageId | `238854355` |
 | pageId URL | `https://docs.matrixback.com/pages/viewpage.action?pageId=238854355` |
 | display URL | `https://docs.matrixback.com/display/cpb/Page+Title` |
+| tiny link | `https://docs.matrixback.com/x/TndqDg` |
 
-display URL 会自动通过 API 查询 spaceKey + title 解析为 pageId。
+display URL 通过 API 查询 spaceKey + title 解析；tiny link 通过跟随重定向解析为最终 URL。
 
 ## Claude 使用指南
 
@@ -76,10 +77,11 @@ api = ConfluenceAPI()
 ### 读取页面
 
 ```python
-# 支持三种格式：pageId、pageId URL、display URL
+# 支持四种格式：pageId、pageId URL、display URL、tiny link
 result = api.read_page("238854355")
 result = api.read_page("https://docs.matrixback.com/pages/viewpage.action?pageId=238854355")
 result = api.read_page("https://docs.matrixback.com/display/cpb/Page+Title")
+result = api.read_page("https://docs.matrixback.com/x/TndqDg")
 
 # 返回:
 # {

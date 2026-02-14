@@ -120,6 +120,15 @@ class ConfluenceAPI:
         if "pageId=" in s:
             match = re.search(r'pageId=(\d+)', s)
             return match.group(1) if match else s
+        # /x/TinyId 短链接格式：需先建立认证 session，再跟随重定向
+        if re.match(r'https?://.+/x/[A-Za-z0-9_-]+$', s):
+            # 先通过 REST API 建立 session cookie（/x/ 不支持 os_authType=basic）
+            self._request("GET", "/rest/api/space", params={"limit": 1})
+            resp = self.session.get(s, allow_redirects=True)
+            final_url = resp.url
+            if final_url != s:
+                return self._extract_page_id(final_url)
+            raise ValueError(f"无法解析短链接: {s}")
         # /display/SPACE/Title 格式
         match = re.match(r'https?://.+/display/([^/]+)/(.+?)(?:\?.*)?$', s)
         if match:
