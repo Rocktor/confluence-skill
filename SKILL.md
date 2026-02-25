@@ -1,6 +1,6 @@
 ---
 name: confluence
-version: 2.6.0
+version: 2.7.0
 description: Confluence文档管理Skill。支持Markdown上传到Confluence、从Confluence导出为Markdown，支持PlantUML和Mermaid图表转换、表格操作、精确编辑等全功能。
 ---
 
@@ -252,7 +252,9 @@ result = api.update_table_cell(
     row_index=1,             # 行索引（0=表头，1=第一行数据）
     column_index=2,          # 列索引（从0开始）
     content="新内容",         # 支持文本、HTML、Markdown
-    append=False             # True=追加，False=替换
+    append=False,            # True=追加，False=替换
+    style=None,              # CSS 样式，如 "background-color: #e3fcef;"
+    highlight_color=None     # 高亮颜色，如 "#e3fcef"（自动设置 data-highlight-colour）
 )
 
 # 返回: {"success": True, "message": "成功更新表格 0 的第 1 行第 2 列", "url": "..."}
@@ -262,6 +264,12 @@ api.update_table_cell("238854355", 0, 1, 2, "[image:screenshot.png]")
 
 # 支持 Markdown 格式
 api.update_table_cell("238854355", 0, 1, 2, "**加粗** 和 *斜体*")
+
+# 设置单元格高亮颜色（浅绿背景）
+api.update_table_cell("238854355", 0, 1, 2, "已完成", highlight_color="#e3fcef")
+
+# 自定义 CSS 样式
+api.update_table_cell("238854355", 0, 1, 2, "重要", style="background-color: #ffe7e7; font-weight: bold;")
 ```
 
 ### 插入行
@@ -274,13 +282,25 @@ result = api.insert_table_row(
     table_index=0,           # 第几个表格
     row_position=2,          # 插入位置（1=在表头后，2=第二行位置...）
     cell_values=["值1", "值2", "值3"],  # 各列的值
-    is_header=False          # True=创建表头行，False=创建数据行
+    is_header=False,         # True=创建表头行，False=创建数据行
+    cell_styles=None         # 每个单元格的样式列表，支持 style 和 highlight_color
 )
 
 # 返回: {"success": True, "message": "成功在表格 0 的第 2 行位置插入新行", "url": "..."}
 
 # 插入包含图片的行
 api.insert_table_row("238854355", 0, 2, ["功能A", "[image:demo.png]", "说明文字"])
+
+# 插入带高亮颜色的行
+api.insert_table_row(
+    "238854355", 0, 2,
+    ["已完成", "功能开发完毕", "2024-01-15"],
+    cell_styles=[
+        {"highlight_color": "#e3fcef"},  # 第1列浅绿
+        None,                             # 第2列无样式
+        None                              # 第3列无样式
+    ]
+)
 ```
 
 ### 删除行
@@ -614,6 +634,58 @@ api.edit_page(
     new_html="<td>[image:new.png]</td>"  # 会转换为 <ac:image>
 )
 ```
+
+### 10. edit_page 双重转义 HTML 实体（v2.7.0 修复）
+
+**问题**：使用 `edit_page()` 或 `create_page()` 上传包含 HTML 实体（如 `&mdash;`、`&nbsp;`、`&#8226;`）的 Markdown 时，`html.escape()` 会把 `&` 转义为 `&amp;`，导致页面上显示 `&amp;mdash;` 而非破折号 `—`。
+
+**原因**：`markdown_to_confluence()` 内部调用 `html.escape()` 处理表格单元格和普通行，但 HTML 实体本身的 `&` 也被二次转义。
+
+**解决方案**（v2.7.0 已修复）：
+- 新增 `_unescape_double_encoded()` 方法，在 `html.escape()` 之后调用
+- 通过正则 `&amp;(#?\w+;)` → `&\1` 还原被双重转义的实体
+
+**如果你还在用 v2.6.0**，可以手动在 `new_html` 中直接使用 HTML 标签代替实体：
+```python
+# 绕过方案：用 Unicode 字符而非 HTML 实体
+api.edit_page(page_id, old_html="...", new_html="<p>文字 — 更多</p>")  # 直接用 Unicode 破折号
+```
+
+### 11. 给文字/单元格加颜色标注（v2.7.0 新增）
+
+**场景**：需要在表格中用颜色区分状态（如绿色=通过、红色=失败）。
+
+**方法1：使用 `update_table_cell()` 设置单元格高亮颜色**
+```python
+# 设置浅绿背景
+api.update_table_cell("page_id", 0, 1, 0, "已通过", highlight_color="#e3fcef")
+
+# 设置浅红背景
+api.update_table_cell("page_id", 0, 2, 0, "失败", highlight_color="#ffe7e7")
+```
+
+**方法2：使用 `insert_table_row()` 批量设置颜色**
+```python
+api.insert_table_row("page_id", 0, 2, ["通过", "说明"],
+    cell_styles=[{"highlight_color": "#e3fcef"}, None])
+```
+
+**方法3：使用 `edit_page()` 设置文字颜色**
+```python
+api.edit_page(page_id, old_html="<p>普通文字</p>",
+    new_html='<p><span style="color: rgb(255, 0, 0);">红色文字</span></p>')
+```
+
+**常用高亮颜色表**：
+
+| 颜色 | 色值 | 用途 |
+|------|------|------|
+| 浅黄 | `#ffffce` | 警告、注意 |
+| 浅绿 | `#e3fcef` | 成功、通过 |
+| 浅红 | `#ffe7e7` | 失败、错误 |
+| 浅蓝 | `#deebff` | 信息、进行中 |
+| 浅紫 | `#eae6ff` | 特殊标记 |
+| 浅灰 | `#f4f5f7` | 已废弃、不适用 |
 
 ## 依赖
 

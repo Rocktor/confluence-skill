@@ -1031,7 +1031,8 @@ class ConfluenceAPI:
         return result
 
     def update_table_cell(self, page_id_or_url: str, table_index: int, row_index: int,
-                          column_index: int, content: str, append: bool = False) -> Dict[str, Any]:
+                          column_index: int, content: str, append: bool = False,
+                          style: str = None, highlight_color: str = None) -> Dict[str, Any]:
         """
         更新表格中指定单元格的内容
 
@@ -1042,6 +1043,8 @@ class ConfluenceAPI:
             column_index: 列索引（从 0 开始）
             content: 新内容（支持文本、HTML、Markdown 或 [image:filename.png] 语法）
             append: 如果为 True，追加到现有内容；否则替换
+            style: CSS 样式字符串，如 "background-color: #e3fcef;"
+            highlight_color: 单元格高亮颜色，如 "#e3fcef"（自动设置 data-highlight-colour 和 class）
 
         Returns:
             {success, message, url} 或 {success, error}
@@ -1094,6 +1097,32 @@ class ConfluenceAPI:
         else:
             final_content = new_content
 
+        # 处理样式参数
+        if highlight_color is not None:
+            color_hex = highlight_color.lstrip('#')
+            # 替换或新增 data-highlight-colour 属性
+            if 'data-highlight-colour' in attrs:
+                attrs = re.sub(r'data-highlight-colour="[^"]*"', f'data-highlight-colour="#{color_hex}"', attrs)
+            else:
+                attrs += f' data-highlight-colour="#{color_hex}"'
+            # 替换或新增 class 属性
+            highlight_class = f'highlight-{color_hex}'
+            if 'class="' in attrs:
+                attrs = re.sub(r'class="[^"]*"', f'class="{highlight_class}"', attrs)
+            else:
+                attrs += f' class="{highlight_class}"'
+            # 合并 background-color 到 style
+            bg_style = f'background-color: #{color_hex};'
+            if 'style="' in attrs:
+                attrs = re.sub(r'style="[^"]*"', f'style="{bg_style}"', attrs)
+            else:
+                attrs += f' style="{bg_style}"'
+        if style is not None:
+            if 'style="' in attrs:
+                attrs = re.sub(r'style="[^"]*"', f'style="{style}"', attrs)
+            else:
+                attrs += f' style="{style}"'
+
         # 构建新单元格
         new_cell = f'<{tag}{attrs}>{final_content}</{tag}>'
 
@@ -1118,7 +1147,8 @@ class ConfluenceAPI:
         return result
 
     def insert_table_row(self, page_id_or_url: str, table_index: int, row_position: int,
-                         cell_values: List[str], is_header: bool = False) -> Dict[str, Any]:
+                         cell_values: List[str], is_header: bool = False,
+                         cell_styles: List[Dict[str, str]] = None) -> Dict[str, Any]:
         """
         在表格中插入新行
 
@@ -1128,6 +1158,7 @@ class ConfluenceAPI:
             row_position: 插入位置（0=在表头之前，1=在表头之后，...）
             cell_values: 单元格值列表
             is_header: 如果为 True，创建 <th> 单元格；否则创建 <td>
+            cell_styles: 每个单元格的样式字典列表，支持 "style" 和 "highlight_color" 键
 
         Returns:
             {success, message, url} 或 {success, error}
@@ -1155,7 +1186,23 @@ class ConfluenceAPI:
 
         # 构建新行
         tag = 'th' if is_header else 'td'
-        cells_html = ''.join(f'<{tag}>{self._process_cell_content(str(v))}</{tag}>' for v in cell_values)
+        cells_parts = []
+        for i, v in enumerate(cell_values):
+            cell_attrs = ''
+            if cell_styles and i < len(cell_styles):
+                cs = cell_styles[i] or {}
+                hl = cs.get('highlight_color')
+                if hl:
+                    color_hex = hl.lstrip('#')
+                    cell_attrs += f' class="highlight-{color_hex}" data-highlight-colour="#{color_hex}" style="background-color: #{color_hex};"'
+                st = cs.get('style')
+                if st:
+                    if 'style="' in cell_attrs:
+                        cell_attrs = re.sub(r'style="[^"]*"', f'style="{st}"', cell_attrs)
+                    else:
+                        cell_attrs += f' style="{st}"'
+            cells_parts.append(f'<{tag}{cell_attrs}>{self._process_cell_content(str(v))}</{tag}>')
+        cells_html = ''.join(cells_parts)
         new_row = f'<tr>{cells_html}</tr>'
 
         # 确定插入位置
@@ -1354,10 +1401,10 @@ class ConfluenceAPI:
                     in_table = True
                     html_lines.append('<table><tbody>')
                     # 表头单元格也需要处理行内格式
-                    row = '<tr>' + ''.join(f'<th>{self._process_inline_formats(html.escape(c))}</th>' for c in cells) + '</tr>'
+                    row = '<tr>' + ''.join(f'<th>{self._process_inline_formats(self._unescape_double_encoded(html.escape(c)))}</th>' for c in cells) + '</tr>'
                 else:
                     # 表格单元格需要处理行内格式（加粗、斜体等）
-                    row = '<tr>' + ''.join(f'<td>{self._process_inline_formats(html.escape(c))}</td>' for c in cells) + '</tr>'
+                    row = '<tr>' + ''.join(f'<td>{self._process_inline_formats(self._unescape_double_encoded(html.escape(c)))}</td>' for c in cells) + '</tr>'
                 html_lines.append(row)
                 continue
             elif in_table:
@@ -1365,7 +1412,7 @@ class ConfluenceAPI:
                 html_lines.append('</tbody></table>')
 
             # 转义并处理行内格式
-            escaped_line = html.escape(line)
+            escaped_line = self._unescape_double_encoded(html.escape(line))
             escaped_line = self._process_inline_formats(escaped_line)
 
             # 块级元素
@@ -1436,6 +1483,10 @@ class ConfluenceAPI:
         line = re.sub(r'`([^`]+)`', r'<code>\1</code>', line)
 
         return line
+
+    def _unescape_double_encoded(self, text: str) -> str:
+        """修复 html.escape() 造成的双重转义，如 &amp;mdash; → &mdash;"""
+        return re.sub(r'&amp;(#?\w+;)', r'&\1', text)
 
     def confluence_to_markdown(self, html_content: str) -> str:
         """Confluence Storage Format 转 Markdown"""

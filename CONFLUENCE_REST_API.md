@@ -291,6 +291,50 @@ X-Atlassian-Token: nocheck
 </table>
 ```
 
+### 带样式的表格（高亮颜色）
+
+Confluence 支持通过 `data-highlight-colour` 属性和对应的 `class` 为单元格添加高亮背景色：
+
+```xml
+<table>
+  <tbody>
+    <tr>
+      <th>状态</th>
+      <th>说明</th>
+    </tr>
+    <tr>
+      <td class="highlight-e3fcef" data-highlight-colour="#e3fcef" style="background-color: #e3fcef;">已完成</td>
+      <td>功能开发完毕</td>
+    </tr>
+    <tr>
+      <td class="highlight-ffe7e7" data-highlight-colour="#ffe7e7" style="background-color: #ffe7e7;">失败</td>
+      <td>测试未通过</td>
+    </tr>
+  </tbody>
+</table>
+```
+
+### 文字颜色
+
+使用 `<span>` 的 `style` 属性设置文字颜色：
+
+```xml
+<span style="color: rgb(255, 0, 0);">红色文字</span>
+<span style="color: rgb(0, 128, 0);">绿色文字</span>
+<span style="color: rgb(0, 0, 255);">蓝色文字</span>
+```
+
+### 常用高亮颜色参考
+
+| 颜色 | 色值 | CSS class | 用途 |
+|------|------|-----------|------|
+| 浅黄 | `#ffffce` | `highlight-ffffce` | 警告、注意 |
+| 浅绿 | `#e3fcef` | `highlight-e3fcef` | 成功、通过 |
+| 浅红 | `#ffe7e7` | `highlight-ffe7e7` | 失败、错误 |
+| 浅蓝 | `#deebff` | `highlight-deebff` | 信息、进行中 |
+| 浅紫 | `#eae6ff` | `highlight-eae6ff` | 特殊标记 |
+| 浅灰 | `#f4f5f7` | `highlight-f4f5f7` | 已废弃、不适用 |
+
 ### 代码块宏
 
 ```xml
