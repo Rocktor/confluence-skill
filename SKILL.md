@@ -30,7 +30,7 @@ if not creds_file.exists():
 else:
     try:
         config = json.loads(creds_file.read_text())
-        missing = [k for k in ['base_url', 'username', 'api_key'] if not config.get(k)]
+        missing = [k for k in ['username', 'api_key'] if not config.get(k)]
         if missing:
             print(f"INCOMPLETE: missing {missing}")
         else:
@@ -52,59 +52,48 @@ else:
 
 检测到未配置时，**主动引导用户完成设置**，不要直接报错退出：
 
-**第一步：了解用户的 Confluence 信息**
+**第一步：了解用户信息**
 
-向用户说明需要三项信息，并询问：
+向用户说明只需要两项信息（网址已预设好，不需要用户提供）：
 
 ```
-我需要先帮您配置 Confluence 连接信息，需要以下三项：
+我需要先帮您配置 Confluence 连接，只需要两项信息：
 
-1. Confluence 网址（如 https://your-company.atlassian.net 或内网地址）
-2. 用户名（登录 Confluence 的邮箱或用户名）
-3. Personal Access Token（API 密钥，下面会教您怎么获取）
+1. 用户名（登录 docs.matrixback.com 的用户名，不含邮箱后缀）
+2. Personal Access Token（API 密钥，下面教您怎么获取）
 
-请先告诉我您的 Confluence 网址和用户名？
+请先告诉我您的用户名？
 ```
 
 **第二步：引导获取 Personal Access Token**
 
-用户提供网址和用户名后，根据 Confluence 类型提供对应引导：
+用户提供用户名后，给出获取步骤：
 
-*如果是 Confluence Cloud（网址含 `.atlassian.net`）：*
-```
-获取 API Token 的步骤：
-1. 访问：https://id.atlassian.com/manage-profile/security/api-tokens
-2. 点击「Create API token」
-3. 输入 Token 名称（如「Claude Code」），点击创建
-4. 复制生成的 Token（只显示一次！）
-```
-
-*如果是 Confluence Server/Data Center（自建或内网）：*
 ```
 获取 Personal Access Token 的步骤：
-1. 登录您的 Confluence
+1. 登录 https://docs.matrixback.com
 2. 点击右上角头像 → 「Profile」（个人资料）
 3. 左侧菜单找「Personal Access Tokens」
 4. 点击「Create token」
 5. 填写 Token 名称（如「Claude Code」），选择过期时间
 6. 点击「Create」，复制生成的 Token（只显示一次！）
 
-💡 如果没有「Personal Access Tokens」菜单，说明您的 Confluence 版本较旧，
-   请提供您的登录密码代替 Token（在配置文件中用 "password" 字段代替 "api_key"）。
+💡 如果没有「Personal Access Tokens」菜单，请提供您的登录密码，
+   配置文件中用 "password" 字段代替 "api_key"。
 ```
 
 **第三步：创建配置文件**
 
-收到三项信息后，帮用户创建配置文件：
+收到两项信息后，帮用户创建配置文件（base_url 自动填入默认值）：
 
 ```python
 import json
 from pathlib import Path
 
 config = {
-    "base_url": "用户提供的网址",   # 替换为实际值
-    "username": "用户提供的用户名",  # 替换为实际值
-    "api_key": "用户提供的Token"     # 替换为实际值
+    "base_url": "https://docs.matrixback.com",  # 默认值，无需用户提供
+    "username": "用户提供的用户名",               # 替换为实际值
+    "api_key": "用户提供的Token"                  # 替换为实际值
 }
 
 creds_file = Path.home() / '.confluence_credentials'
@@ -161,7 +150,7 @@ except Exception as e:
 
 ```json
 {
-  "base_url": "https://your-confluence.example.com",
+  "base_url": "https://docs.matrixback.com",
   "username": "your.name",
   "api_key": "your_personal_access_token"
 }
@@ -169,11 +158,11 @@ except Exception as e:
 
 **字段说明：**
 
-| 字段 | 说明 | 示例 |
-|------|------|------|
-| `base_url` | Confluence 站点根地址，不带末尾斜杠 | `https://docs.example.com` |
-| `username` | 登录用户名（Cloud 版用邮箱） | `zhang.san` 或 `zhang.san@example.com` |
-| `api_key` | Personal Access Token（推荐）或登录密码 | 生成后为长字符串 |
+| 字段 | 说明 | 默认值 |
+|------|------|--------|
+| `base_url` | Confluence 站点根地址，不带末尾斜杠 | `https://docs.matrixback.com`（已内置，通常无需修改） |
+| `username` | 登录用户名，不含邮箱后缀 | 必填 |
+| `api_key` | Personal Access Token（推荐）或登录密码 | 必填 |
 
 > **使用密码代替 Token**：如果 Confluence 版本不支持 Personal Access Tokens，可用 `"password"` 字段代替 `"api_key"`。
 
@@ -182,7 +171,7 @@ except Exception as e:
 ```bash
 cat > ~/.confluence_credentials << 'EOF'
 {
-  "base_url": "https://your-confluence.example.com",
+  "base_url": "https://docs.matrixback.com",
   "username": "your.name",
   "api_key": "your_token_here"
 }
