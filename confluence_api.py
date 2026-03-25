@@ -161,7 +161,7 @@ class ConfluenceAPI:
         attachment_pattern = r'<ri:attachment ri:filename="([^"]+)"'
         for match in re.finditer(attachment_pattern, html_content):
             filename = match.group(1)
-            download_url = f"{self.base_url}/download/attachments/{page_id}/{filename}"
+            download_url = f"{self.base_url}/download/attachments/{page_id}/{filename}?os_authType=basic"
             images.append({
                 'filename': filename,
                 'url': download_url,
@@ -857,8 +857,8 @@ class ConfluenceAPI:
         if not target:
             return None
         
-        # 下载附件内容
-        response = self.session.get(target['download_url'])
+        # 下载附件内容（必须带 os_authType=basic 认证）
+        response = self.session.get(target['download_url'], params={"os_authType": "basic"})
         
         if response.status_code != 200:
             return None

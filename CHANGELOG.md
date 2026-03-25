@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.8.1] - 2026-03-24
+
+### Bug 修复
+
+- **修复附件下载 401 认证失败**：`read_attachment()` 下载时缺少 `os_authType=basic` 参数，导致所有附件读取返回 401
+- **修复 `_extract_images()` URL 缺认证**：生成的图片下载链接未带 `?os_authType=basic`，同样导致 401
+- **修复 sys.path 硬编码**：初始化路径从 `.kiro` 改为 `Path.home() / '.claude/skills/confluence'`
+
+### 改进
+
+- **SKILL.md 重构**：908 行精简到 270 行，按 Progressive Disclosure 拆分为 5 个 references/ 文件
+- **description 优化**：改为 "Use when..." 格式，覆盖 attachments/tables/comments 等关键词
+- **智能附件读取策略**：先看正文引用，按需下载，避免盲目拉取所有附件
+
+---
+
 ## [2.8.0] - 2026-03-13
 
 ### 新增功能 ✨
