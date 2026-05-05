@@ -1,5 +1,29 @@
 # 踩坑指南（开发经验总结）
 
+## 0. Confluence 10.x 认证方式变化
+
+**问题**：换了新的 Personal Access Token 后仍然 401。
+
+**原因**：Confluence Data Center 10.x 推荐 PAT Bearer 认证，不能把 PAT 当成 `username + api_key` 的 Basic Auth 来用。Confluence 10.0 起 Basic Auth 默认禁用。
+
+**正确配置**：
+
+```json
+{
+  "base_url": "https://docs.matrixback.com",
+  "auth_type": "bearer",
+  "api_key": "your_personal_access_token"
+}
+```
+
+**正确请求形态**：
+
+```http
+Authorization: Bearer <personal_access_token>
+```
+
+只有旧实例或管理员明确开启 Basic Auth 时，才配置 `auth_type: "basic"`。
+
 ## 1. 图片附件格式（极其重要！）
 
 **问题**：图片上传成功但在页面中显示为破图

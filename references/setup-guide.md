@@ -14,7 +14,9 @@ if not creds_file.exists():
 else:
     try:
         config = json.loads(creds_file.read_text())
-        missing = [k for k in ['username', 'api_key'] if not config.get(k)]
+        auth_type = config.get('auth_type', 'auto')
+        required = ['api_key'] if auth_type in ['auto', 'bearer'] else ['username']
+        missing = [k for k in required if not config.get(k)]
         if missing:
             print(f"INCOMPLETE: missing {missing}")
         else:
@@ -43,15 +45,15 @@ else:
 ```
 我需要先帮您配置 Confluence 连接，只需要两项信息：
 
-1. 用户名（登录 docs.matrixback.com 的用户名，不含邮箱后缀）
-2. Personal Access Token（API 密钥，下面教您怎么获取）
+1. Personal Access Token（推荐，下面教您怎么获取）
+2. 仅旧版 Basic Auth 需要用户名和密码
 
-请先告诉我您的用户名？
+请先创建并提供 Personal Access Token。
 ```
 
 ### 第二步：引导获取 Personal Access Token
 
-用户提供用户名后，给出获取步骤：
+给出获取步骤：
 
 ```
 获取 Personal Access Token 的步骤：
@@ -62,8 +64,7 @@ else:
 5. 填写 Token 名称（如「Claude Code」），选择过期时间
 6. 点击「Create」，复制生成的 Token（只显示一次！）
 
-如果没有「Personal Access Tokens」菜单，请提供您的登录密码，
-配置文件中用 "password" 字段代替 "api_key"。
+如果没有「Personal Access Tokens」菜单，说明站点可能关闭了 PAT，需要改用旧版 Basic Auth：配置 `"auth_type": "basic"`、`"username"` 和 `"password"`。
 ```
 
 ### 第三步：创建配置文件
@@ -76,7 +77,7 @@ from pathlib import Path
 
 config = {
     "base_url": "https://docs.matrixback.com",  # 默认值，无需用户提供
-    "username": "用户提供的用户名",               # 替换为实际值
+    "auth_type": "bearer",
     "api_key": "用户提供的Token"                  # 替换为实际值
 }
 
@@ -93,13 +94,13 @@ print(f"配置已保存到 {creds_file}")
 ```python
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path.home() / '.claude/skills/confluence'))
+sys.path.insert(0, str(Path.home() / '.codex/skills/confluence'))
 from confluence_api import ConfluenceAPI
 
 try:
     api = ConfluenceAPI()
-    spaces = api.get_spaces()
-    print(f"连接成功！找到 {len(spaces)} 个 Space：{[s['key'] for s in spaces[:3]]}")
+    result = api.test_connection()
+    print(result)
 except Exception as e:
     print(f"连接失败：{e}")
 ```
@@ -107,7 +108,7 @@ except Exception as e:
 连接成功后告诉用户，并继续执行他最初的请求。
 
 连接失败时，根据错误类型给出提示：
-- `401 Unauthorized` → Token 或用户名有误，请重新检查
+- `401 Unauthorized` → Token 过期、复制错误，或把 Data Center PAT 错配成 Basic Auth
 - `ConnectionError` / `timeout` → 网址可能有误，或网络不通
 - `403 Forbidden` → Token 权限不足，需要重新生成
 
@@ -118,7 +119,7 @@ except Exception as e:
 ```json
 {
   "base_url": "https://docs.matrixback.com",
-  "username": "your.name",
+  "auth_type": "bearer",
   "api_key": "your_personal_access_token"
 }
 ```
@@ -126,7 +127,20 @@ except Exception as e:
 | 字段 | 说明 | 默认值 |
 |------|------|--------|
 | `base_url` | Confluence 站点根地址，不带末尾斜杠 | `https://docs.matrixback.com`（已内置） |
-| `username` | 登录用户名，不含邮箱后缀 | 必填 |
-| `api_key` | Personal Access Token（推荐）或登录密码 | 必填 |
+| `auth_type` | `bearer` / `basic` / `auto` | `auto` |
+| `api_key` | Personal Access Token。Data Center 7.9+ 推荐用 Bearer PAT | Bearer 必填 |
+| `username` | 登录用户名，不含邮箱后缀 | Basic 必填 |
+| `password` | 登录密码或旧 API 密钥 | Basic 必填 |
 
-> 使用密码代替 Token：如果 Confluence 版本不支持 PAT，可用 `"password"` 字段代替 `"api_key"`。
+## 旧版 Basic Auth 配置
+
+Confluence Data Center 10.0 起 Basic Auth 默认禁用。只有管理员明确开启 Basic Auth，或连接非常老的实例时才使用：
+
+```json
+{
+  "base_url": "https://docs.matrixback.com",
+  "auth_type": "basic",
+  "username": "your.name",
+  "password": "your_password"
+}
+```

@@ -11,7 +11,7 @@ description: >-
   don't explicitly say "Confluence".
 ---
 
-# Confluence 文档管理 Skill
+# Confluence 文档管理 Skill 3.0
 
 ## 触发条件
 
@@ -37,7 +37,9 @@ if not creds_file.exists():
 else:
     try:
         config = json.loads(creds_file.read_text())
-        missing = [k for k in ['username', 'api_key'] if not config.get(k)]
+        auth_type = config.get('auth_type', 'auto')
+        required = ['api_key'] if auth_type in ['auto', 'bearer'] else ['username']
+        missing = [k for k in required if not config.get(k)]
         print(f"INCOMPLETE: missing {missing}" if missing else "OK")
     except Exception as e:
         print(f"INVALID: {e}")
@@ -48,7 +50,7 @@ else:
 ```python
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path.home() / '.claude/skills/confluence'))
+sys.path.insert(0, str(Path.home() / '.codex/skills/confluence'))
 from confluence_api import ConfluenceAPI
 api = ConfluenceAPI()
 ```
@@ -58,10 +60,16 @@ api = ConfluenceAPI()
 配置文件：`~/.confluence_credentials`（JSON，权限 600）
 
 ```json
-{"base_url": "https://docs.matrixback.com", "username": "your.name", "api_key": "your_token"}
+{
+  "base_url": "https://docs.matrixback.com",
+  "auth_type": "bearer",
+  "api_key": "your_personal_access_token"
+}
 ```
 
 详细说明见 `references/setup-guide.md`。
+
+Confluence Data Center 10.x 推荐使用 Personal Access Token 的 Bearer 认证。旧实例或明确启用 Basic Auth 的站点才使用 `auth_type: "basic"`。
 
 ## 快速决策矩阵
 
@@ -88,6 +96,9 @@ api = ConfluenceAPI()
 | 上传图片/文件 | `upload_attachment()` → 再插入引用 | 必须两步！推荐 JPG |
 | 添加评论 | `add_comment()` | 支持 Markdown |
 | 获取评论 | `get_comments()` | 分页获取 |
+| 查询标签 | `get_labels()` / `add_labels()` | Data Center REST 标签 API |
+| 查看权限限制 | `get_restrictions()` | 返回 read/update 限制 |
+| 连接诊断 | `test_connection()` | 返回认证方式、状态、当前用户，可用时返回服务端信息 |
 | 获取原始 HTML | `get_page_html()` | Storage Format |
 | 更新原始 HTML | `update_page_html()` | 直接操作 |
 
@@ -141,6 +152,7 @@ api.update_page("238854355", markdown="# 全新内容", title="新标题")
 
 ```python
 pages = api.search("关键词", space="cpb", limit=10)
+pages = api.cql('type=page AND space="cpb" AND text~"IPD"', limit=20)
 api.move_page("238873903", "240254369")  # 移动到新父页面
 children = api.list_children("214946975")
 ```
@@ -228,6 +240,21 @@ comments = api.get_comments("238854355", limit=25, start=0)
 # 返回: {"comments": [{id, author, created, content, html}], "total": N}
 ```
 
+## Data Center 10.x 增强能力
+
+```python
+# 连接诊断
+api.test_connection()
+api.get_current_user()
+
+# 标签
+api.get_labels("238854355")
+api.add_labels("238854355", ["weekly-board", "ipd"])
+
+# 页面限制
+api.get_restrictions("238854355")
+```
+
 ## 编辑策略（重要规则）
 
 ### 绝对禁止
@@ -244,9 +271,10 @@ comments = api.get_comments("238854355", limit=25, start=0)
 
 | 错误 | 原因 | 解决 |
 |------|------|------|
-| 401 | 认证失败 | 检查 `~/.confluence_credentials`，用户名不带邮箱后缀 |
+| 401 | 认证失败 | Data Center 10.x 优先检查 `auth_type: bearer` 和 PAT 是否过期 |
 | 400 | XHTML 解析错误 | 特殊字符需转义，避免 emoji |
 | 404 | 页面不存在 | 检查 pageId |
+| 409 | 版本冲突 | 重新 `read_page()` 后再编辑 |
 | 精确编辑失败 | old_html 不匹配 | 用 `get_page_html()` 查看原始 HTML |
 | 图片不显示 | 用了 `<ri:url>` | 改用 `<ri:attachment>`，见踩坑指南 |
 

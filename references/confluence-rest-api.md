@@ -1,14 +1,26 @@
 # Confluence REST API 参考文档
 
-> 适用于 Confluence Server/Data Center v6.15.4+
+> 适用于 Confluence Server/Data Center v6.15.4+，3.0 重点兼容 Confluence Data Center 10.x。
 
 ## 认证
 
-**重要**：使用 `os_authType=basic` 参数绕过 SSO 认证。
+### Data Center 10.x 推荐：Bearer PAT
+
+```
+GET /rest/api/content/{id}
+Authorization: Bearer <personal_access_token>
+Accept: application/json
+```
+
+Personal Access Token 在 Confluence Data Center 7.9+ 可用。Confluence 10.0 起 Basic Auth 默认禁用，因此 3.0 默认把 `api_key` 当作 Bearer PAT 使用。
+
+### 旧版 Basic Auth
+
+只有站点明确启用 Basic Auth 时使用：
 
 ```
 GET /rest/api/content/{id}?os_authType=basic
-Authorization: Basic base64(username:password)
+Authorization: Basic base64(username:password_or_token)
 ```
 
 ## 核心端点
@@ -23,7 +35,7 @@ GET /rest/api/content/{id}
 | 参数 | 说明 |
 |------|------|
 | expand | 展开字段：`body.storage`, `version`, `space`, `ancestors` |
-| os_authType | 设为 `basic` 绕过 SSO |
+| os_authType | 仅 Basic Auth 模式需要；Bearer PAT 不需要 |
 
 **响应示例**：
 ```json
@@ -110,6 +122,7 @@ GET /rest/api/content/search
 | cql | CQL 查询语句 |
 | limit | 返回数量限制 |
 | start | 分页起始位置 |
+| expand | 展开字段，如 `space,version` |
 
 **CQL 示例**：
 ```
@@ -140,6 +153,46 @@ GET /rest/api/space
 |------|------|
 | type | 空间类型：`global`, `personal` |
 | limit | 返回数量限制 |
+
+### 8. 当前用户 / 连接诊断
+
+```
+GET /rest/api/user/current
+GET /rest/api/content?limit=1
+```
+
+`test_connection()` 使用内容列表接口验证认证，再读取当前 token 对应的用户。
+
+### 9. 服务端版本信息（管理员能力）
+
+```
+GET /rest/troubleshooting/1.0/pre-upgrade/info
+```
+
+该接口可返回已安装版本和可升级版本信息，但通常要求系统管理员权限。普通 PAT 可能返回 401。
+
+### 10. 标签
+
+```
+GET /rest/api/content/{id}/label
+POST /rest/api/content/{id}/label
+```
+
+POST 请求体：
+
+```json
+[
+  {"prefix": "global", "name": "weekly-board"}
+]
+```
+
+### 11. 页面限制
+
+```
+GET /rest/api/content/{id}/restriction/byOperation?expand=restrictions.user,restrictions.group
+```
+
+返回 read/update 限制信息。是否可见取决于当前 token 对页面和空间的权限。
 
 ## 评论 API
 

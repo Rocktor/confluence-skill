@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Confluence API 客户端 - 全功能版
+Confluence API 客户端 - 3.0 Data Center 版
 
 用法:
     from confluence_api import ConfluenceAPI
@@ -26,14 +26,16 @@ Confluence API 客户端 - 全功能版
     api.insert_content(page_id, markdown="# 新章节", position="append")
 """
 
-import os
 import re
 import json
 import html
 import requests
+import zipfile
+import xml.etree.ElementTree as ET
+from urllib.parse import quote, unquote, urlparse
 from pathlib import Path
 from html import unescape
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Iterator
 from io import BytesIO
 
 # 可选依赖：Word 文档解析
@@ -43,20 +45,29 @@ try:
 except ImportError:
     DOCX_AVAILABLE = False
 
+try:
+    import openpyxl
+    OPENPYXL_AVAILABLE = True
+except ImportError:
+    OPENPYXL_AVAILABLE = False
+
 
 class ConfluenceAPI:
-    """Confluence API 客户端 - 全功能版"""
+    """Confluence API 客户端 - 兼容 Confluence Data Center 10.x"""
 
     DEFAULT_BASE_URL = "https://docs.matrixback.com"
 
-    def __init__(self, base_url: str = None, api_key: str = None, username: str = None, password: str = None):
+    def __init__(self, base_url: str = None, api_key: str = None,
+                 username: str = None, password: str = None,
+                 auth_type: str = None):
         """
         初始化 Confluence API 客户端
 
         优先使用传入参数，否则从 ~/.confluence_credentials 读取
-        支持两种认证方式：
-        1. API Key: username + api_key (优先)
-        2. 用户名密码: username + password
+        支持三种认证方式：
+        1. Bearer PAT: auth_type="bearer" + api_key（Confluence Data Center 7.9+ 推荐）
+        2. Basic API Key: username + api_key
+        3. 用户名密码: username + password
         """
         config = self._load_credentials()
 
@@ -64,21 +75,37 @@ class ConfluenceAPI:
         self.username = username or config.get('username')
         self.api_key = api_key or config.get('api_key')
         self.password = password or config.get('password')
+        self.auth_type = (auth_type or config.get('auth_type') or 'auto').lower()
 
-        if not self.username:
+        if self.auth_type == 'auto':
+            # Confluence Data Center 10.0 起 Basic Auth 默认禁用；新 token 默认按 PAT Bearer 使用。
+            self.auth_type = 'bearer' if self.api_key else 'basic'
+
+        if self.auth_type not in {'bearer', 'basic'}:
+            raise ValueError("auth_type 仅支持 'bearer'、'basic' 或 'auto'")
+
+        if self.auth_type == 'basic' and not self.username:
             raise ValueError("缺少用户名，请配置 ~/.confluence_credentials")
 
-        # 优先使用 API Key，否则使用密码
-        if self.api_key:
-            auth_credential = self.api_key
-        elif self.password:
-            auth_credential = self.password
+        if self.auth_type == 'bearer':
+            if not self.api_key:
+                raise ValueError("Bearer 认证缺少 api_key，请配置 ~/.confluence_credentials")
+            auth_credential = None
         else:
-            raise ValueError("缺少认证信息（api_key 或 password），请配置 ~/.confluence_credentials")
+            # Basic 模式优先使用 password，避免把 Data Center PAT 错当 Cloud API token。
+            auth_credential = self.password or self.api_key
+            if not auth_credential:
+                raise ValueError("Basic 认证缺少 password 或 api_key，请配置 ~/.confluence_credentials")
 
         self.session = requests.Session()
-        self.session.auth = (self.username, auth_credential)
-        self.session.headers.update({'Content-Type': 'application/json'})
+        if self.auth_type == 'bearer':
+            self.session.headers.update({'Authorization': f'Bearer {self.api_key}'})
+        else:
+            self.session.auth = (self.username, auth_credential)
+        self.session.headers.update({
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+        })
 
     def _load_credentials(self) -> Dict[str, str]:
         """从配置文件加载认证信息"""
@@ -107,30 +134,86 @@ class ConfluenceAPI:
         except Exception:
             return {}
 
+    def _auth_params(self, params: Dict = None) -> Dict:
+        """按认证方式补充请求参数。Bearer PAT 不需要 os_authType。"""
+        merged = dict(params or {})
+        if self.auth_type == 'basic':
+            merged.setdefault("os_authType", "basic")
+        return merged
+
     def _request(self, method: str, endpoint: str, params: Dict = None,
                  data: Dict = None, timeout: int = 30) -> requests.Response:
         """发送 API 请求"""
         url = f"{self.base_url}{endpoint}"
-        if params is None:
-            params = {}
-        params["os_authType"] = "basic"
 
         return self.session.request(
-            method, url, params=params,
+            method, url, params=self._auth_params(params),
             data=json.dumps(data) if data else None,
             timeout=timeout
         )
 
+    def _json_error(self, response: requests.Response) -> str:
+        """提取 Confluence REST 错误摘要。"""
+        try:
+            payload = response.json()
+            return payload.get('message') or payload.get('errorMessage') or json.dumps(payload, ensure_ascii=False)
+        except Exception:
+            text = response.text.strip()
+            return text[:1000] if text else f"HTTP {response.status_code}"
+
+    def _paginate(self, endpoint: str, params: Dict = None, limit: int = 100,
+                  max_results: int = None) -> Iterator[Dict[str, Any]]:
+        """遍历 Confluence start/limit 分页接口。"""
+        start = int((params or {}).get('start', 0))
+        fetched = 0
+
+        while True:
+            page_params = dict(params or {})
+            page_params.update({"start": start, "limit": limit})
+            response = self._request("GET", endpoint, params=page_params)
+            if response.status_code != 200:
+                return
+
+            payload = response.json()
+            results = payload.get('results', [])
+            if not results:
+                return
+
+            for item in results:
+                yield item
+                fetched += 1
+                if max_results is not None and fetched >= max_results:
+                    return
+
+            size = payload.get('size', len(results))
+            if size < limit:
+                return
+            start += size
+
     def _extract_page_id(self, page_id_or_url: str) -> str:
         """从 URL 或直接 ID 提取页面 ID"""
-        s = str(page_id_or_url)
-        # pageId=xxx 格式
-        if "pageId=" in s:
-            match = re.search(r'pageId=(\d+)', s)
-            return match.group(1) if match else s
+        s = str(page_id_or_url).strip()
+        if re.fullmatch(r'\d+', s):
+            return s
+
+        # pageId=xxx 老链接
+        match = re.search(r'[?&]pageId=(\d+)', s)
+        if match:
+            return match.group(1)
+
+        # /spaces/SPACE/pages/123/Page+Title 新链接
+        match = re.search(r'/spaces/[^/]+/pages/(\d+)(?:/|$)', s)
+        if match:
+            return match.group(1)
+
+        # /pages/123/Page+Title 兼容链接
+        match = re.search(r'/pages/(\d+)(?:/|$)', s)
+        if match:
+            return match.group(1)
+
         # /x/TinyId 短链接格式：需先建立认证 session，再跟随重定向
         if re.match(r'https?://.+/x/[A-Za-z0-9_-]+$', s):
-            # 先通过 REST API 建立 session cookie（/x/ 不支持 os_authType=basic）
+            # 先通过 REST API 建立 session cookie
             self._request("GET", "/rest/api/space", params={"limit": 1})
             resp = self.session.get(s, allow_redirects=True)
             final_url = resp.url
@@ -157,29 +240,106 @@ class ConfluenceAPI:
         """从 HTML 内容中提取图片信息"""
         images = []
 
-        # 查找所有附件图片: <ri:attachment ri:filename="xxx.png" />
-        attachment_pattern = r'<ri:attachment ri:filename="([^"]+)"'
-        for match in re.finditer(attachment_pattern, html_content):
+        # 只在 ac:image 块内提取 ri:attachment，避免把 docx/pptx 等普通附件误判为图片。
+        image_blocks = re.findall(r'<ac:image[^>]*>.*?</ac:image>', html_content, flags=re.DOTALL)
+        for block in image_blocks:
+            match = re.search(r'<ri:attachment ri:filename="([^"]+)"', block)
+            if not match:
+                continue
             filename = match.group(1)
-            download_url = f"{self.base_url}/download/attachments/{page_id}/{filename}?os_authType=basic"
+            if not any(filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp']):
+                continue
+            encoded_filename = quote(filename)
+            download_url = f"{self.base_url}/download/attachments/{page_id}/{encoded_filename}"
+            if self.auth_type == 'basic':
+                download_url += "?os_authType=basic"
             images.append({
                 'filename': filename,
                 'url': download_url,
                 'type': 'attachment'
             })
 
-        # 查找外部图片: <ri:url ri:value="https://..." />
-        url_pattern = r'<ri:url ri:value="([^"]+)"'
-        for match in re.finditer(url_pattern, html_content):
-            url = match.group(1)
-            if any(url.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.svg']):
-                images.append({
-                    'filename': url.split('/')[-1],
+        # 查找外部图片: <ac:image><ri:url ri:value="https://..." /></ac:image>
+        for block in image_blocks:
+            match = re.search(r'<ri:url ri:value="([^"]+)"', block)
+            if not match:
+                continue
+            url = unescape(match.group(1))
+            path = urlparse(url).path
+            filename = unquote(path.split('/')[-1])
+            if any(path.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp']):
+                image = {
+                    'filename': filename,
                     'url': url,
                     'type': 'external'
-                })
+                }
+                source_match = re.search(r'/download/attachments/(\d+)/([^/?]+)', url)
+                if source_match:
+                    image['source_page_id'] = source_match.group(1)
+                images.append(image)
 
         return images
+
+    def test_connection(self) -> Dict[str, Any]:
+        """
+        测试当前认证和基础 REST API 是否可用。
+
+        Returns:
+            {success, base_url, auth_type, status, server_info? / error?}
+        """
+        response = self._request("GET", "/rest/api/content", params={"limit": 1})
+        result = {
+            "success": response.status_code == 200,
+            "base_url": self.base_url,
+            "auth_type": self.auth_type,
+            "status": response.status_code
+        }
+        if response.status_code == 200:
+            current_user = self.get_current_user()
+            if current_user:
+                result["current_user"] = current_user
+            server_info = self.get_server_info()
+            if server_info:
+                result["server_info"] = server_info
+        else:
+            result["error"] = self._json_error(response)
+        return result
+
+    def get_current_user(self) -> Dict[str, Any]:
+        """获取当前 token 对应的用户。"""
+        response = self._request("GET", "/rest/api/user/current")
+        if response.status_code != 200:
+            return {}
+
+        data = response.json()
+        return {
+            "username": data.get("username"),
+            "display_name": data.get("displayName"),
+            "email": data.get("email"),
+            "user_key": data.get("userKey"),
+            "type": data.get("type")
+        }
+
+    def get_server_info(self) -> Dict[str, Any]:
+        """
+        尝试获取 Confluence 服务端信息。
+
+        Data Center 的版本信息通常属于管理员诊断能力；普通 PAT 可能返回 401/404。
+        可用时返回实例版本信息，不可用时返回空字典。
+        """
+        response = self._request("GET", "/rest/troubleshooting/1.0/pre-upgrade/info")
+        if response.status_code != 200:
+            return {}
+
+        data = response.json()
+        instance_data = data.get("instanceData", data)
+        return {
+            "version": instance_data.get("fullName") or instance_data.get("version"),
+            "build_number": instance_data.get("buildNumber") or instance_data.get("build_number"),
+            "base_url": instance_data.get("baseUrl") or instance_data.get("baseURL"),
+            "title": instance_data.get("productDisplayName") or instance_data.get("title"),
+            "raw": data
+        }
 
     # ============ 核心 API 方法 ============
 
@@ -284,14 +444,14 @@ class ConfluenceAPI:
 
         response = self._request("POST", "/rest/api/content", data=data)
 
-        if response.status_code == 200:
+        if response.status_code in [200, 201]:
             result = response.json()
             return {
                 "success": True,
                 "id": result['id'],
                 "url": f"{self.base_url}{result['_links']['webui']}"
             }
-        return {"success": False, "error": response.text, "status": response.status_code}
+        return {"success": False, "error": self._json_error(response), "status": response.status_code}
 
     def update_page(self, page_id: str, markdown: str, title: str = None) -> Dict[str, Any]:
         """
@@ -330,7 +490,7 @@ class ConfluenceAPI:
 
         if response.status_code == 200:
             return {"success": True, "url": current['url']}
-        return {"success": False, "error": response.text}
+        return {"success": False, "error": self._json_error(response), "status": response.status_code}
 
     def update_page_html(self, page_id: str, html_content: str, title: str = None) -> Dict[str, Any]:
         """
@@ -367,7 +527,7 @@ class ConfluenceAPI:
 
         if response.status_code == 200:
             return {"success": True, "url": page_info['url']}
-        return {"success": False, "error": response.text}
+        return {"success": False, "error": self._json_error(response), "status": response.status_code}
 
     def edit_page(self, page_id_or_url: str, old_html: str, new_html: str) -> Dict[str, Any]:
         """
@@ -510,74 +670,75 @@ class ConfluenceAPI:
                 "url": f"{self.base_url}/pages/viewpage.action?pageId={page_id}"
             }
         else:
-            error_msg = response.text
-            try:
-                error_msg = response.json().get('message', response.text)
-            except:
-                pass
             return {
                 "success": False,
-                "error": f"Failed to move page: {error_msg}"
+                "error": f"Failed to move page: {self._json_error(response)}",
+                "status": response.status_code
             }
 
-    def search(self, keyword: str, space: str = None, limit: int = 10) -> List[Dict]:
+    def search(self, keyword: str = None, space: str = None, limit: int = 10,
+               cql: str = None, expand: str = "space,version") -> List[Dict]:
         """
         搜索页面
 
         Args:
-            keyword: 搜索关键词
+            keyword: 搜索关键词（默认按标题搜索）
             space: 空间 Key (可选)
             limit: 返回数量限制
+            cql: 自定义 CQL。传入后优先使用，不再拼接 keyword/space。
+            expand: Confluence expand 参数
 
         Returns:
-            [{id, title, space_key, url}]
+            [{id, title, type, space_key, url, version}]
         """
-        cql = f'type=page AND title~"{keyword}"'
-        if space:
-            cql += f' AND space="{space}"'
+        if not cql:
+            if not keyword:
+                raise ValueError("search() 需要 keyword 或 cql")
+            cql = f'type=page AND title~"{keyword}"'
+            if space:
+                cql += f' AND space="{space}"'
 
-        response = self._request(
-            "GET",
+        items = list(self._paginate(
             "/rest/api/content/search",
-            params={"cql": cql, "limit": limit}
-        )
+            params={"cql": cql, "expand": expand},
+            limit=min(limit, 100),
+            max_results=limit
+        ))
 
-        if response.status_code != 200:
+        if not items:
             return []
 
         results = []
-        for item in response.json().get('results', []):
+        for item in items:
             results.append({
                 "id": item['id'],
                 "title": item['title'],
+                "type": item.get('type', ''),
                 "space_key": item.get('space', {}).get('key', ''),
-                "url": f"{self.base_url}{item['_links']['webui']}"
+                "url": f"{self.base_url}{item['_links']['webui']}",
+                "version": item.get('version', {}).get('number')
             })
         return results
 
-    def list_children(self, page_id: str) -> List[Dict]:
+    def cql(self, query: str, limit: int = 25, expand: str = "space,version") -> List[Dict]:
+        """执行原始 CQL 查询。"""
+        return self.search(cql=query, limit=limit, expand=expand)
+
+    def list_children(self, page_id: str, limit: int = 100) -> List[Dict]:
         """
         列出子页面
 
         Args:
             page_id: 父页面 ID
+            limit: 最大返回数量
 
         Returns:
             [{id, title, url}]
         """
         page_id = self._extract_page_id(page_id)
 
-        response = self._request(
-            "GET",
-            f"/rest/api/content/{page_id}/child/page",
-            params={"limit": 100}
-        )
-
-        if response.status_code != 200:
-            return []
-
         results = []
-        for item in response.json().get('results', []):
+        for item in self._paginate(f"/rest/api/content/{page_id}/child/page", limit=min(limit, 100), max_results=limit):
             results.append({
                 "id": item['id'],
                 "title": item['title'],
@@ -587,19 +748,47 @@ class ConfluenceAPI:
 
     def get_spaces(self, limit: int = 50) -> List[Dict]:
         """获取空间列表"""
-        response = self._request("GET", "/rest/api/space", params={"limit": limit})
-
-        if response.status_code != 200:
-            return []
-
         results = []
-        for item in response.json().get('results', []):
+        for item in self._paginate("/rest/api/space", limit=min(limit, 100), max_results=limit):
             results.append({
                 "key": item['key'],
                 "name": item['name'],
                 "type": item.get('type', '')
             })
         return results
+
+    def get_labels(self, page_id_or_url: str, limit: int = 100) -> List[Dict[str, str]]:
+        """获取页面标签。"""
+        page_id = self._extract_page_id(page_id_or_url)
+        labels = []
+        for item in self._paginate(f"/rest/api/content/{page_id}/label", limit=min(limit, 100), max_results=limit):
+            labels.append({
+                "name": item.get("name", ""),
+                "prefix": item.get("prefix", ""),
+                "label": item.get("label", "")
+            })
+        return labels
+
+    def add_labels(self, page_id_or_url: str, labels: List[str]) -> Dict[str, Any]:
+        """给页面添加全局标签。"""
+        page_id = self._extract_page_id(page_id_or_url)
+        data = [{"prefix": "global", "name": label} for label in labels]
+        response = self._request("POST", f"/rest/api/content/{page_id}/label", data=data)
+        if response.status_code in [200, 201]:
+            return {"success": True, "labels": labels}
+        return {"success": False, "error": self._json_error(response), "status": response.status_code}
+
+    def get_restrictions(self, page_id_or_url: str) -> Dict[str, Any]:
+        """获取页面查看/编辑限制。"""
+        page_id = self._extract_page_id(page_id_or_url)
+        response = self._request(
+            "GET",
+            f"/rest/api/content/{page_id}/restriction/byOperation",
+            params={"expand": "restrictions.user,restrictions.group"}
+        )
+        if response.status_code != 200:
+            return {"success": False, "error": self._json_error(response), "status": response.status_code}
+        return {"success": True, "restrictions": response.json()}
 
     # ============ 附件操作 ============
 
@@ -616,12 +805,14 @@ class ConfluenceAPI:
         """
         page_id = self._extract_page_id(page_id)
         url = f"{self.base_url}/rest/api/content/{page_id}/child/attachment"
-        params = {"os_authType": "basic"}
+        params = self._auth_params()
 
         filename = Path(file_path).name
 
         # 先检查是否已存在
         resp = self.session.get(url, params=params)
+        if resp.status_code != 200:
+            return {"success": False, "error": self._json_error(resp), "status": resp.status_code}
         existing = {a['title']: a['id'] for a in resp.json().get('results', [])}
 
         with open(file_path, 'rb') as f:
@@ -652,7 +843,7 @@ class ConfluenceAPI:
 
                 if resp.status_code in [200, 201]:
                     return {"success": True, "filename": filename}
-                return {"success": False, "error": resp.text}
+                return {"success": False, "error": self._json_error(resp), "status": resp.status_code}
             finally:
                 # 恢复 header
                 if old_ct:
@@ -698,14 +889,14 @@ class ConfluenceAPI:
 
         response = self._request("POST", "/rest/api/content", data=data)
 
-        if response.status_code == 200:
+        if response.status_code in [200, 201]:
             result = response.json()
             return {
                 "success": True,
                 "id": result['id'],
                 "url": f"{self.base_url}{result['_links']['webui']}"
             }
-        return {"success": False, "error": response.text, "status": response.status_code}
+        return {"success": False, "error": self._json_error(response), "status": response.status_code}
 
     def get_comments(self, page_id_or_url: str, limit: int = 25, start: int = 0) -> Dict[str, Any]:
         """
@@ -783,15 +974,13 @@ class ConfluenceAPI:
             ]
         """
         page_id = self._extract_page_id(page_id_or_url)
-        url = f"{self.base_url}/rest/api/content/{page_id}/child/attachment"
-        
-        response = self.session.get(url, params={"os_authType": "basic", "limit": limit})
-        
-        if response.status_code != 200:
-            return []
-        
         attachments = []
-        for att in response.json().get('results', []):
+        for att in self._paginate(
+            f"/rest/api/content/{page_id}/child/attachment",
+            params={"expand": "version,history"},
+            limit=min(limit, 100),
+            max_results=limit
+        ):
             download_link = att.get('_links', {}).get('download', '')
             
             attachments.append({
@@ -806,8 +995,8 @@ class ConfluenceAPI:
         
         return attachments
 
-    def read_attachment(self, page_id_or_url: str, filename: str = None, attachment_index: int = None, 
-                       parse_docx: bool = True) -> Optional[Dict[str, Any]]:
+    def read_attachment(self, page_id_or_url: str, filename: str = None, attachment_index: int = None,
+                       parse_docx: bool = True, parse_office: bool = True) -> Optional[Dict[str, Any]]:
         """
         读取附件内容（支持按文件名或索引）
 
@@ -816,6 +1005,7 @@ class ConfluenceAPI:
             filename: 附件文件名（可选）
             attachment_index: 附件索引，从 0 开始（可选）
             parse_docx: 是否自动解析 Word 文档为文本（默认 True）
+            parse_office: 是否自动解析 pptx/xlsx 为文本摘要（默认 True）
 
         Returns:
             {
@@ -824,7 +1014,9 @@ class ConfluenceAPI:
                 "media_type": "MIME类型",
                 "file_size": 文件大小,
                 "is_text": True/False,
-                "parsed_from_docx": True/False  # 是否从 Word 解析而来
+                "parsed_from_docx": True/False,
+                "parsed_from_pptx": True/False,
+                "parsed_from_xlsx": True/False
             }
             或 None（未找到）
 
@@ -857,8 +1049,8 @@ class ConfluenceAPI:
         if not target:
             return None
         
-        # 下载附件内容（必须带 os_authType=basic 认证）
-        response = self.session.get(target['download_url'], params={"os_authType": "basic"})
+        # 下载附件内容。Bearer PAT 走 Authorization header；Basic 模式补 os_authType。
+        response = self.session.get(target['download_url'], params=self._auth_params())
         
         if response.status_code != 200:
             return None
@@ -878,6 +1070,8 @@ class ConfluenceAPI:
         
         # 尝试解析 Word 文档
         parsed_from_docx = False
+        parsed_from_pptx = False
+        parsed_from_xlsx = False
         content = response.content
         
         if parse_docx and DOCX_AVAILABLE and filename_lower.endswith('.docx'):
@@ -890,9 +1084,25 @@ class ConfluenceAPI:
             except Exception:
                 # 解析失败，返回原始二进制
                 pass
-        
+
+        if parse_office and filename_lower.endswith('.pptx'):
+            try:
+                content = self._extract_pptx_text(response.content)
+                is_text = True
+                parsed_from_pptx = True
+            except Exception:
+                pass
+
+        if parse_office and OPENPYXL_AVAILABLE and filename_lower.endswith('.xlsx'):
+            try:
+                content = self._extract_xlsx_text(response.content)
+                is_text = True
+                parsed_from_xlsx = True
+            except Exception:
+                pass
+
         # 如果是文本但还是 bytes，尝试解码
-        if is_text and isinstance(content, bytes) and not parsed_from_docx:
+        if is_text and isinstance(content, bytes) and not (parsed_from_docx or parsed_from_pptx or parsed_from_xlsx):
             try:
                 content = content.decode('utf-8')
             except UnicodeDecodeError:
@@ -909,8 +1119,49 @@ class ConfluenceAPI:
         
         if parsed_from_docx:
             result['parsed_from_docx'] = True
-        
+        if parsed_from_pptx:
+            result['parsed_from_pptx'] = True
+        if parsed_from_xlsx:
+            result['parsed_from_xlsx'] = True
+
         return result
+
+    def _extract_pptx_text(self, data: bytes) -> str:
+        """从 PPTX 中提取幻灯片文本，不依赖 python-pptx。"""
+        lines = []
+        ns = {'a': 'http://schemas.openxmlformats.org/drawingml/2006/main'}
+        with zipfile.ZipFile(BytesIO(data)) as zf:
+            slide_names = sorted(
+                [name for name in zf.namelist() if re.match(r'ppt/slides/slide\d+\.xml$', name)],
+                key=lambda name: int(re.search(r'slide(\d+)\.xml$', name).group(1))
+            )
+            for idx, name in enumerate(slide_names, start=1):
+                root = ET.fromstring(zf.read(name))
+                texts = [node.text.strip() for node in root.findall('.//a:t', ns) if node.text and node.text.strip()]
+                if texts:
+                    lines.append(f"## Slide {idx}")
+                    lines.extend(texts)
+                    lines.append("")
+        return "\n".join(lines).strip()
+
+    def _extract_xlsx_text(self, data: bytes, max_rows_per_sheet: int = 200) -> str:
+        """从 XLSX 中提取工作表文本摘要。"""
+        wb = openpyxl.load_workbook(BytesIO(data), read_only=True, data_only=True)
+        parts = []
+        try:
+            for ws in wb.worksheets:
+                parts.append(f"## Sheet: {ws.title}")
+                for row_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
+                    if row_idx > max_rows_per_sheet:
+                        parts.append(f"... truncated after {max_rows_per_sheet} rows")
+                        break
+                    values = ["" if cell is None else str(cell) for cell in row]
+                    if any(values):
+                        parts.append("\t".join(values).rstrip())
+                parts.append("")
+        finally:
+            wb.close()
+        return "\n".join(parts).strip()
 
     def download_attachment(self, page_id_or_url: str, filename: str, save_path: str) -> Dict[str, Any]:
         """

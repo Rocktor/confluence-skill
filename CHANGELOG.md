@@ -1,5 +1,32 @@
 # Changelog
 
+## [3.0.0] - 2026-05-05
+
+### 重大升级
+
+- **适配 Confluence Data Center 10.x**：默认支持 Personal Access Token 的 `Authorization: Bearer <token>` 认证。
+- **保留旧版 Basic Auth**：通过 `auth_type: "basic"` 继续兼容旧实例，Basic 模式才追加 `os_authType=basic`。
+- **新版 URL 解析**：支持 `/spaces/{space}/pages/{pageId}/{title}`、`/pages/{pageId}`、`pageId=`、`/display/{space}/{title}` 和 tiny link。
+- **分页能力统一**：新增内部 `_paginate()`，`search()`、`list_children()`、`get_spaces()`、`list_attachments()` 支持跨页拉取。
+
+### 新增功能
+
+- `test_connection()`：诊断 base_url、认证方式、HTTP 状态、当前用户，并在有权限时读取服务端信息。
+- `get_current_user()`：读取当前 token 对应用户，用于认证诊断。
+- `get_server_info()`：尽力读取管理员诊断接口 `/rest/troubleshooting/1.0/pre-upgrade/info`。
+- `cql()`：直接执行 CQL 查询。
+- `get_labels()` / `add_labels()`：读取和添加页面标签。
+- `get_restrictions()`：读取页面 read/update 权限限制。
+
+### 改进
+
+- 附件上传、下载、正文图片 URL 生成不再强依赖 Basic Auth 参数。
+- REST 错误统一通过 `_json_error()` 提取可读摘要。
+- `create_page()` 和 `add_comment()` 同时接受 200/201 成功状态。
+- 文档更新为 Confluence 10.x / Data Center PAT 认证优先。
+
+---
+
 ## [2.8.1] - 2026-03-24
 
 ### Bug 修复
